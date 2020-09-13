@@ -28,6 +28,7 @@
 #include <quick-lint-js/lex.h>
 #include <quick-lint-js/location.h>
 #include <quick-lint-js/padded-string.h>
+#include <quick-lint-js/parse-visitor.h>
 
 #define QLJS_PARSER_UNIMPLEMENTED()                                   \
   do {                                                                \
@@ -54,7 +55,7 @@ class parser {
     return this->expressions_;
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_module(Visitor &v) {
     while (this->peek().type != token_type::end_of_file) {
       this->parse_and_visit_statement(v);
@@ -62,7 +63,7 @@ class parser {
     v.visit_end_of_module();
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_statement(Visitor &v) {
     switch (this->peek().type) {
       case token_type::kw_export:
@@ -173,7 +174,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_expression(Visitor &v) {
     this->parse_and_visit_expression(v, precedence{});
   }
@@ -188,7 +189,7 @@ class parser {
     rhs,
   };
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void visit_expression(expression_ptr ast, Visitor &v,
                         variable_context context) {
     auto visit_children = [&] {
@@ -309,7 +310,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void visit_assignment_expression(expression_ptr lhs, expression_ptr rhs,
                                    Visitor &v) {
     this->visit_expression(lhs, v, variable_context::lhs);
@@ -317,7 +318,7 @@ class parser {
     this->maybe_visit_assignment(lhs, v);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void visit_compound_assignment_expression(expression_ptr lhs,
                                             expression_ptr rhs, Visitor &v) {
     this->visit_expression(lhs, v, variable_context::rhs);
@@ -325,7 +326,7 @@ class parser {
     this->maybe_visit_assignment(lhs, v);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void maybe_visit_assignment(expression_ptr ast, Visitor &v) {
     switch (ast->kind()) {
       case expression_kind::object:
@@ -342,7 +343,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_declaration(Visitor &v) {
     switch (this->peek().type) {
       case token_type::kw_async:
@@ -381,7 +382,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_statement_block_no_scope(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::left_curly);
     this->lexer_.skip();
@@ -397,7 +398,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_function_declaration(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_function);
     this->lexer_.skip();
@@ -412,14 +413,14 @@ class parser {
     this->parse_and_visit_function_parameters_and_body(v);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_function_parameters_and_body(Visitor &v) {
     v.visit_enter_function_scope();
     this->parse_and_visit_function_parameters_and_body_no_scope(v);
     v.visit_exit_function_scope();
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_function_parameters_and_body_no_scope(Visitor &v) {
     if (this->peek().type != token_type::left_paren) {
       QLJS_PARSER_UNIMPLEMENTED();
@@ -463,7 +464,7 @@ class parser {
     this->parse_and_visit_statement_block_no_scope(v);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_class(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_class);
     this->lexer_.skip();
@@ -514,14 +515,14 @@ class parser {
     v.visit_exit_class_scope();
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_class_body(Visitor &v) {
     while (this->peek().type != token_type::right_curly) {
       this->parse_and_visit_class_member(v);
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_class_member(Visitor &v) {
     if (this->peek().type == token_type::kw_static) {
       this->lexer_.skip();
@@ -558,7 +559,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_switch(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_switch);
     this->lexer_.skip();
@@ -602,7 +603,7 @@ class parser {
     v.visit_exit_block_scope();
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_try(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_try);
     this->lexer_.skip();
@@ -638,7 +639,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_do_while(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_do);
     this->lexer_.skip();
@@ -657,7 +658,7 @@ class parser {
     this->lexer_.skip();
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_for(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_for);
     this->lexer_.skip();
@@ -754,7 +755,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_while(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_while);
     this->lexer_.skip();
@@ -770,7 +771,7 @@ class parser {
     this->parse_and_visit_statement(v);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_if(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_if);
     this->lexer_.skip();
@@ -791,7 +792,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_import(Visitor &v) {
     QLJS_ASSERT(this->peek().type == token_type::kw_import);
     this->lexer_.skip();
@@ -835,7 +836,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_let_bindings(Visitor &v, token_type declaring_token) {
     variable_kind declaration_kind;
     switch (declaring_token) {
@@ -856,7 +857,7 @@ class parser {
     this->parse_and_visit_let_bindings(v, declaration_kind);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_let_bindings(Visitor &v,
                                     variable_kind declaration_kind) {
     source_code_span let_span = this->peek().span();
@@ -897,7 +898,7 @@ class parser {
     }
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_binding_element(Visitor &v,
                                        variable_kind declaration_kind) {
     expression_ptr ast = this->parse_expression(
@@ -905,7 +906,7 @@ class parser {
     this->visit_binding_element(ast, v, declaration_kind);
   }
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void visit_binding_element(expression_ptr ast, Visitor &v,
                              variable_kind declaration_kind) {
     switch (ast->kind()) {
@@ -944,7 +945,7 @@ class parser {
     bool in_operator = true;
   };
 
-  template <class Visitor>
+  template <QLJS_PARSE_VISITOR Visitor>
   void parse_and_visit_expression(Visitor &v, precedence prec) {
     expression_ptr ast = this->parse_expression(prec);
     this->visit_expression(ast, v, variable_context::rhs);
