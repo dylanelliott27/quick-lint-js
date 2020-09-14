@@ -19,18 +19,82 @@
 #include <gtest/gtest.h>
 #include <quick-lint-js/char8.h>
 #include <quick-lint-js/error-collector.h>
+#include <quick-lint-js/error-matcher.h>
 #include <quick-lint-js/language.h>
 #include <quick-lint-js/lex.h>
 #include <quick-lint-js/lint.h>
-
-#define FIELD(_class, _member, ...) \
-  (::testing::Field(#_member, &_class::_member, __VA_ARGS__))
 
 using ::testing::IsEmpty;
 using ::testing::UnorderedElementsAre;
 
 namespace quick_lint_js {
 namespace {
+class span_matcher {
+ public:
+  explicit span_matcher(const char8 *expected) : expected_(expected) {}
+
+  /*implicit*/ operator testing::Matcher<const identifier &>() const {
+    return testing::Matcher<const identifier &>(
+        new identifier_impl(this->expected_));
+  }
+
+  /*implicit*/ operator testing::Matcher<const source_code_span &>() const {
+    return testing::Matcher<const source_code_span &>(
+        new span_impl(this->expected_));
+  }
+
+  class span_impl : public testing::MatcherInterface<const source_code_span &> {
+   public:
+    explicit span_impl(const char8 *expected) : expected_(expected) {}
+
+    void DescribeTo(std::ostream *out) const override {
+      *out << "begins at " << static_cast<const void *>(this->expected_);
+    }
+
+    void DescribeNegationTo(std::ostream *out) const override {
+      *out << "doesn't begin at " << static_cast<const void *>(this->expected_);
+    }
+
+    bool MatchAndExplain(
+        const source_code_span &span,
+        testing::MatchResultListener *listener) const override {
+      bool result = span.begin() == this->expected_;
+      *listener << "whose span (at " << static_cast<const void *>(span.begin())
+                << ") " << (result ? "begins" : "doesn't begin") << " at "
+                << static_cast<const void *>(this->expected_);
+      return result;
+    }
+
+   private:
+    const char8 *expected_;
+  };
+
+  class identifier_impl : public testing::MatcherInterface<const identifier &> {
+   public:
+    explicit identifier_impl(const char8 *expected) : impl_(expected) {}
+
+    void DescribeTo(std::ostream *out) const override {
+      this->impl_.DescribeTo(out);
+    }
+
+    void DescribeNegationTo(std::ostream *out) const override {
+      this->impl_.DescribeNegationTo(out);
+    }
+
+    bool MatchAndExplain(
+        const identifier &ident,
+        testing::MatchResultListener *listener) const override {
+      return this->impl_.MatchAndExplain(ident.span(), listener);
+    }
+
+   private:
+    span_impl impl_;
+  };
+
+ private:
+  const char8 *expected_;
+};
+
 source_code_span span_of(const char8 *code) {
   return source_code_span(&code[0], &code[strlen(code)]);
 }
@@ -135,10 +199,9 @@ TEST(test_lint, immutable_global_variables_are_not_assignable) {
     l.visit_variable_assignment(identifier_of(global_variable));
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_assignment_to_const_global_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), global_variable);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_assignment_to_const_global_variable,
+                              assignment, span_matcher(global_variable))));
   }
 
   for (const char8 *global_variable : non_writable_global_variables) {
@@ -155,10 +218,9 @@ TEST(test_lint, immutable_global_variables_are_not_assignable) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_assignment_to_const_global_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), global_variable);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_assignment_to_const_global_variable,
+                              assignment, span_matcher(global_variable))));
   }
 }
 
@@ -287,10 +349,9 @@ TEST(test_lint, nodejs_commonjs_module_variables_cannot_be_redeclared) {
     l.visit_variable_declaration(identifier_of(variable), variable_kind::_let);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_global_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), variable);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_redeclaration_of_global_variable,
+                              redeclaration, span_matcher(variable))));
   }
 }
 
@@ -308,11 +369,10 @@ TEST(test_lint, let_or_const_or_class_variable_use_before_declaration) {
     l.visit_variable_declaration(identifier_of(declaration), kind);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_variable_used_before_declaration);
-    EXPECT_EQ(v.errors[0].where.begin(), use);
-    EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                              error_variable_used_before_declaration,  //
+                              use, span_matcher(use),                  //
+                              declaration, span_matcher(declaration))));
   }
 }
 
@@ -349,11 +409,10 @@ TEST(test_lint, let_variable_use_before_declaration_within_function) {
   l.visit_exit_function_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, let_variable_use_before_declaration_within_for_loop_scope) {
@@ -373,11 +432,10 @@ TEST(test_lint, let_variable_use_before_declaration_within_for_loop_scope) {
   l.visit_exit_for_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, let_variable_use_before_declaration_of_shadowing_variable) {
@@ -399,11 +457,10 @@ TEST(test_lint, let_variable_use_before_declaration_of_shadowing_variable) {
   l.visit_variable_declaration(identifier_of(declaration), variable_kind::_let);
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, var_or_function_variable_use_before_declaration) {
@@ -487,10 +544,9 @@ TEST(
     l.visit_variable_use(identifier_of(use));
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_use_of_undeclared_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), use);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                             name, span_matcher(use))));
   }
 }
 
@@ -598,10 +654,9 @@ TEST(test_lint, variable_use_with_no_declaration) {
   l.visit_variable_use(identifier_of(use));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use))));
 }
 
 TEST(test_lint, variable_use_in_function_with_no_declaration) {
@@ -618,10 +673,9 @@ TEST(test_lint, variable_use_in_function_with_no_declaration) {
   l.visit_exit_function_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use))));
 }
 
 TEST(test_lint, variable_use_with_declaration_in_different_function) {
@@ -646,10 +700,9 @@ TEST(test_lint, variable_use_with_declaration_in_different_function) {
   l.visit_exit_function_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use))));
 }
 
 TEST(test_lint,
@@ -678,11 +731,10 @@ TEST(test_lint,
   l.visit_exit_block_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), inner_declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(inner_declaration))));
 }
 
 TEST(test_lint, use_of_variable_declared_in_grandparent_scope) {
@@ -800,13 +852,11 @@ TEST(test_lint,
   l.visit_variable_use(identifier_of(use_after));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 2);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use_before);
-  EXPECT_EQ(v.errors[1].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[1].where.begin(), use_after);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_before)),
+                          ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_after))));
 }
 
 TEST(test_lint, use_global_variable_within_functions) {
@@ -961,12 +1011,11 @@ TEST(test_lint, assign_to_immutable_variable) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_assignment_to_const_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), assignment);
-    EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-    EXPECT_EQ(v.errors[0].var_kind, kind);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_3_FIELDS(
+                              error_assignment_to_const_variable,      //
+                              assignment, span_matcher(assignment),    //
+                              declaration, span_matcher(declaration),  //
+                              var_kind, kind)));
   }
 
   for (variable_kind kind : {variable_kind::_const, variable_kind::_import}) {
@@ -982,12 +1031,11 @@ TEST(test_lint, assign_to_immutable_variable) {
     l.visit_exit_block_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_assignment_to_const_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), assignment);
-    EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-    EXPECT_EQ(v.errors[0].var_kind, kind);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_3_FIELDS(
+                              error_assignment_to_const_variable,      //
+                              assignment, span_matcher(assignment),    //
+                              declaration, span_matcher(declaration),  //
+                              var_kind, kind)));
   }
 }
 
@@ -1005,17 +1053,15 @@ TEST(test_lint, assign_to_immutable_variable_before_declaration) {
   l.visit_end_of_module();
 
   // TODO(strager): Should we combine these two errors into one?
-  ASSERT_THAT(
+  EXPECT_THAT(
       v.errors,
       UnorderedElementsAre(
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_before_variable_declaration),
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_to_const_variable)));
-  for (const error_collector::error &error : v.errors) {
-    EXPECT_EQ(error.where.begin(), assignment);
-    EXPECT_EQ(error.other_where.begin(), declaration);
-  }
+          ERROR_TYPE_2_FIELDS(error_assignment_before_variable_declaration,  //
+                              assignment, span_matcher(assignment),          //
+                              declaration, span_matcher(declaration)),
+          ERROR_TYPE_2_FIELDS(error_assignment_to_const_variable,    //
+                              assignment, span_matcher(assignment),  //
+                              declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, assign_to_shadowing_immutable_variable_before_declaration) {
@@ -1040,17 +1086,15 @@ TEST(test_lint, assign_to_shadowing_immutable_variable_before_declaration) {
   l.visit_end_of_module();
 
   // TODO(strager): Should we combine these two errors into one?
-  ASSERT_THAT(
+  EXPECT_THAT(
       v.errors,
       UnorderedElementsAre(
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_before_variable_declaration),
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_to_const_variable)));
-  for (const error_collector::error &error : v.errors) {
-    EXPECT_EQ(error.where.begin(), assignment);
-    EXPECT_EQ(error.other_where.begin(), inner_declaration);
-  }
+          ERROR_TYPE_2_FIELDS(error_assignment_before_variable_declaration,  //
+                              assignment, span_matcher(assignment),          //
+                              declaration, span_matcher(inner_declaration)),
+          ERROR_TYPE_2_FIELDS(error_assignment_to_const_variable,    //
+                              assignment, span_matcher(assignment),  //
+                              declaration, span_matcher(inner_declaration))));
 }
 
 TEST(test_lint, assign_to_immutable_variable_declared_in_parent_scope) {
@@ -1071,12 +1115,11 @@ TEST(test_lint, assign_to_immutable_variable_declared_in_parent_scope) {
   l.visit_exit_function_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_to_const_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-  EXPECT_EQ(v.errors[0].var_kind, variable_kind::_const);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_3_FIELDS(
+                            error_assignment_to_const_variable,      //
+                            assignment, span_matcher(assignment),    //
+                            declaration, span_matcher(declaration),  //
+                            var_kind, variable_kind::_const)));
 }
 
 TEST(test_lint, assign_to_immutable_variable_declared_later_in_parent_scope) {
@@ -1097,12 +1140,11 @@ TEST(test_lint, assign_to_immutable_variable_declared_later_in_parent_scope) {
                                variable_kind::_const);
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_to_const_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-  EXPECT_EQ(v.errors[0].var_kind, variable_kind::_const);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_3_FIELDS(
+                            error_assignment_to_const_variable,      //
+                            assignment, span_matcher(assignment),    //
+                            declaration, span_matcher(declaration),  //
+                            var_kind, variable_kind::_const)));
 }
 
 TEST(test_lint,
@@ -1132,17 +1174,15 @@ TEST(test_lint,
   l.visit_end_of_module();
 
   // TODO(strager): Should we combine these two errors into one?
-  ASSERT_THAT(
+  EXPECT_THAT(
       v.errors,
       UnorderedElementsAre(
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_before_variable_declaration),
-          FIELD(error_collector::error, kind,
-                error_collector::error_assignment_to_const_variable)));
-  for (const error_collector::error &error : v.errors) {
-    EXPECT_EQ(error.where.begin(), assignment);
-    EXPECT_EQ(error.other_where.begin(), inner_declaration);
-  }
+          ERROR_TYPE_2_FIELDS(error_assignment_before_variable_declaration,  //
+                              assignment, span_matcher(assignment),          //
+                              declaration, span_matcher(inner_declaration)),
+          ERROR_TYPE_2_FIELDS(error_assignment_to_const_variable,    //
+                              assignment, span_matcher(assignment),  //
+                              declaration, span_matcher(inner_declaration))));
 }
 
 TEST(test_lint, assignment_to_const_variable_declared_in_grandparent_scope) {
@@ -1168,12 +1208,11 @@ TEST(test_lint, assignment_to_const_variable_declared_in_grandparent_scope) {
   l.visit_exit_function_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_to_const_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-  EXPECT_EQ(v.errors[0].var_kind, variable_kind::_const);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_3_FIELDS(
+                            error_assignment_to_const_variable,      //
+                            assignment, span_matcher(assignment),    //
+                            declaration, span_matcher(declaration),  //
+                            var_kind, variable_kind::_const)));
 }
 
 TEST(test_lint, assign_to_undeclared_variable) {
@@ -1185,10 +1224,9 @@ TEST(test_lint, assign_to_undeclared_variable) {
   l.visit_variable_assignment(identifier_of(assignment));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_to_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                            error_assignment_to_undeclared_variable, assignment,
+                            span_matcher(assignment))));
 }
 
 TEST(test_lint, assign_to_variable_before_declaration) {
@@ -1203,11 +1241,10 @@ TEST(test_lint, assign_to_variable_before_declaration) {
   l.visit_variable_declaration(identifier_of(declaration), variable_kind::_let);
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_before_variable_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_assignment_before_variable_declaration,  //
+                            assignment, span_matcher(assignment),          //
+                            declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, assign_to_variable_before_hoistable_declaration) {
@@ -1307,13 +1344,11 @@ TEST(test_lint, use_for_loop_let_variable_before_or_after_loop) {
   l.visit_variable_use(identifier_of(use_after));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 2);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use_before);
-  EXPECT_EQ(v.errors[1].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[1].where.begin(), use_after);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_before)),
+                          ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_after))));
 }
 
 TEST(test_lint, use_variable_in_for_scope_declared_outside_for_scope) {
@@ -1371,11 +1406,10 @@ TEST(test_lint, use_variable_in_for_scope_declared_outside_for_scope) {
                                  variable_kind::_let);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_variable_used_before_declaration);
-    EXPECT_EQ(v.errors[0].where.begin(), use);
-    EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                              error_variable_used_before_declaration,  //
+                              use, span_matcher(use),                  //
+                              declaration, span_matcher(declaration))));
   }
 }
 
@@ -1396,10 +1430,9 @@ TEST(test_lint, use_undeclared_variable_in_function_scope_in_for_scope) {
   l.visit_exit_for_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use))));
 }
 
 TEST(test_lint,
@@ -1449,11 +1482,10 @@ TEST(test_lint,
   l.visit_exit_for_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), inner_declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(inner_declaration))));
 }
 
 TEST(
@@ -1480,11 +1512,10 @@ TEST(
   l.visit_exit_for_scope();
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_assignment_before_variable_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), assignment);
-  EXPECT_EQ(v.errors[0].other_where.begin(), inner_declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_assignment_before_variable_declaration,  //
+                            assignment, span_matcher(assignment),          //
+                            declaration, span_matcher(inner_declaration))));
 }
 
 TEST(test_lint, shadowing_variable_in_parent_block_scope_is_okay) {
@@ -1525,13 +1556,16 @@ TEST(test_lint, declaring_variable_twice_is_an_error) {
                                variable_kind::_let);
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 2);
-  EXPECT_EQ(v.errors[0].kind, error_collector::error_redeclaration_of_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), second_declaration);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
-  EXPECT_EQ(v.errors[1].kind, error_collector::error_redeclaration_of_variable);
-  EXPECT_EQ(v.errors[1].where.begin(), third_declaration);
-  EXPECT_EQ(v.errors[1].other_where.begin(), declaration);
+  EXPECT_THAT(
+      v.errors,
+      ElementsAre(ERROR_TYPE_2_FIELDS(
+                      error_redeclaration_of_variable,                  //
+                      redeclaration, span_matcher(second_declaration),  //
+                      original_declaration, span_matcher(declaration)),
+                  ERROR_TYPE_2_FIELDS(
+                      error_redeclaration_of_variable,                 //
+                      redeclaration, span_matcher(third_declaration),  //
+                      original_declaration, span_matcher(declaration))));
 }
 
 TEST(test_lint, declaring_variable_twice_with_var_is_okay) {
@@ -1717,11 +1751,11 @@ TEST(
                                    second_declaration_kind);
       l.visit_end_of_module();
 
-      ASSERT_EQ(v.errors.size(), 1);
-      EXPECT_EQ(v.errors[0].kind,
-                error_collector::error_redeclaration_of_variable);
-      EXPECT_EQ(v.errors[0].where.begin(), second_declaration);
-      EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+      EXPECT_THAT(v.errors,
+                  ElementsAre(ERROR_TYPE_2_FIELDS(
+                      error_redeclaration_of_variable,                  //
+                      redeclaration, span_matcher(second_declaration),  //
+                      original_declaration, span_matcher(declaration))));
     }
   }
 
@@ -1740,11 +1774,11 @@ TEST(
                                    second_declaration_kind);
       l.visit_end_of_module();
 
-      ASSERT_EQ(v.errors.size(), 1);
-      EXPECT_EQ(v.errors[0].kind,
-                error_collector::error_redeclaration_of_variable);
-      EXPECT_EQ(v.errors[0].where.begin(), second_declaration);
-      EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+      EXPECT_THAT(v.errors,
+                  ElementsAre(ERROR_TYPE_2_FIELDS(
+                      error_redeclaration_of_variable,                  //
+                      redeclaration, span_matcher(second_declaration),  //
+                      original_declaration, span_matcher(declaration))));
     }
   }
 }
@@ -1770,11 +1804,11 @@ TEST(test_lint, strict_variables_conflict_with_var_in_block_scope) {
                                  other_declaration_kind);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), other_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), var_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_redeclaration_of_variable,                 //
+                    redeclaration, span_matcher(other_declaration),  //
+                    original_declaration, span_matcher(var_declaration))));
   }
 
   for (variable_kind other_declaration_kind :
@@ -1794,11 +1828,11 @@ TEST(test_lint, strict_variables_conflict_with_var_in_block_scope) {
     l.visit_exit_block_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), var_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), other_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_redeclaration_of_variable,               //
+                    redeclaration, span_matcher(var_declaration),  //
+                    original_declaration, span_matcher(other_declaration))));
   }
 }
 
@@ -1865,11 +1899,11 @@ TEST(test_lint, import_conflicts_with_any_variable_declaration) {
                                  other_declaration_kind);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), other_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), import_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_redeclaration_of_variable,                 //
+                    redeclaration, span_matcher(other_declaration),  //
+                    original_declaration, span_matcher(import_declaration))));
   }
 
   for (variable_kind other_declaration_kind :
@@ -1885,11 +1919,11 @@ TEST(test_lint, import_conflicts_with_any_variable_declaration) {
                                  variable_kind::_import);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), import_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), other_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_redeclaration_of_variable,                  //
+                    redeclaration, span_matcher(import_declaration),  //
+                    original_declaration, span_matcher(other_declaration))));
   }
 }
 
@@ -1913,11 +1947,12 @@ TEST(test_lint, let_style_variable_in_same_scope_as_parameter_redeclares) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), local_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), parameter_declaration);
+    EXPECT_THAT(
+        v.errors,
+        ElementsAre(ERROR_TYPE_2_FIELDS(
+            error_redeclaration_of_variable,                 //
+            redeclaration, span_matcher(local_declaration),  //
+            original_declaration, span_matcher(parameter_declaration))));
   }
 }
 
@@ -1991,11 +2026,11 @@ TEST(test_lint, catch_variable_conflicts_with_non_var_variables) {
     l.visit_exit_block_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_redeclaration_of_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), local_declaration);
-    EXPECT_EQ(v.errors[0].other_where.begin(), catch_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_redeclaration_of_variable,                 //
+                    redeclaration, span_matcher(local_declaration),  //
+                    original_declaration, span_matcher(catch_declaration))));
   }
 }
 
@@ -2020,10 +2055,9 @@ TEST(test_lint, parameter_default_value_cannot_refer_to_local_variables) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_use_of_undeclared_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), parameter_default_value);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_use_of_undeclared_variable, name,
+                              span_matcher(parameter_default_value))));
   }
 
   {
@@ -2048,10 +2082,9 @@ TEST(test_lint, parameter_default_value_cannot_refer_to_local_variables) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_use_of_undeclared_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), parameter_default_value);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_use_of_undeclared_variable, name,
+                              span_matcher(parameter_default_value))));
   }
 }
 
@@ -2072,10 +2105,9 @@ TEST(test_lint, parameter_default_value_uses_undeclared_variable) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_use_of_undeclared_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), parameter_default_value);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_use_of_undeclared_variable, name,
+                              span_matcher(parameter_default_value))));
   }
 
   {
@@ -2097,10 +2129,9 @@ TEST(test_lint, parameter_default_value_uses_undeclared_variable) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_use_of_undeclared_variable);
-    EXPECT_EQ(v.errors[0].where.begin(), parameter_default_value);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_FIELD(
+                              error_use_of_undeclared_variable, name,
+                              span_matcher(parameter_default_value))));
   }
 }
 
@@ -2163,11 +2194,10 @@ TEST(test_lint, let_shadows_named_function_name) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_variable_used_before_declaration);
-    EXPECT_EQ(v.errors[0].where.begin(), var_use);
-    EXPECT_EQ(v.errors[0].other_where.begin(), var_declaration);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                              error_variable_used_before_declaration,  //
+                              use, span_matcher(var_use),              //
+                              declaration, span_matcher(var_declaration))));
   }
 }
 
@@ -2196,11 +2226,10 @@ TEST(test_lint, let_shadows_global_variable) {
                                  variable_kind::_let);
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_variable_used_before_declaration);
-    EXPECT_EQ(v.errors[0].where.begin(), var_use);
-    EXPECT_EQ(v.errors[0].other_where.begin(), var_declaration);
+    EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                              error_variable_used_before_declaration,  //
+                              use, span_matcher(var_use),              //
+                              declaration, span_matcher(var_declaration))));
   }
 }
 
@@ -2232,10 +2261,9 @@ TEST(test_lint_magic_arguments,
   l.visit_variable_use(identifier_of(arguments_use));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), arguments_use);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(arguments_use))));
 }
 
 TEST(test_lint_magic_arguments, parameter_named_arguments_does_not_conflict) {
@@ -2357,11 +2385,11 @@ TEST(test_lint_magic_arguments, let_shadows_magic_arguments) {
     l.visit_exit_function_scope();
     l.visit_end_of_module();
 
-    ASSERT_EQ(v.errors.size(), 1);
-    EXPECT_EQ(v.errors[0].kind,
-              error_collector::error_variable_used_before_declaration);
-    EXPECT_EQ(v.errors[0].where.begin(), arguments_use);
-    EXPECT_EQ(v.errors[0].other_where.begin(), arguments_declaration);
+    EXPECT_THAT(v.errors,
+                ElementsAre(ERROR_TYPE_2_FIELDS(
+                    error_variable_used_before_declaration,  //
+                    use, span_matcher(arguments_use),        //
+                    declaration, span_matcher(arguments_declaration))));
   }
 }
 
@@ -2489,11 +2517,10 @@ TEST(test_lint_typeof, typeof_variable_declared_later_is_an_error) {
   l.visit_variable_declaration(identifier_of(declaration), variable_kind::_let);
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 1);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_variable_used_before_declaration);
-  EXPECT_EQ(v.errors[0].where.begin(), use);
-  EXPECT_EQ(v.errors[0].other_where.begin(), declaration);
+  EXPECT_THAT(v.errors, ElementsAre(ERROR_TYPE_2_FIELDS(
+                            error_variable_used_before_declaration,  //
+                            use, span_matcher(use),                  //
+                            declaration, span_matcher(declaration))));
 }
 
 TEST(
@@ -2521,13 +2548,11 @@ TEST(
   l.visit_variable_use(identifier_of(use_after));
   l.visit_end_of_module();
 
-  ASSERT_EQ(v.errors.size(), 2);
-  EXPECT_EQ(v.errors[0].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[0].where.begin(), use_before);
-  EXPECT_EQ(v.errors[1].kind,
-            error_collector::error_use_of_undeclared_variable);
-  EXPECT_EQ(v.errors[1].where.begin(), use_after);
+  EXPECT_THAT(v.errors,
+              ElementsAre(ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_before)),
+                          ERROR_TYPE_FIELD(error_use_of_undeclared_variable,
+                                           name, span_matcher(use_after))));
 }
 }
 }
